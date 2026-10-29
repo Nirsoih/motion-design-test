@@ -1,0 +1,132 @@
+<!doctype html><html><head><meta charset="utf-8"><title>FoodyFly score</title></head><body>
+<script>
+'use strict';
+// Generates two stems for the 52 s film: music.wav and sfx.wav (48 kHz stereo).
+const SR = 48000, DUR = 52, BPM = 84, B = 60 / BPM;
+const PHONE = 9.8; // scene-local times of the phone film start here
+const TAPS = [3.2, 8.0, 11.1, 14.2, 16.4, 18.0, 21.0, 22.3, 23.8, 25.0, 28.2].map(t => t + PHONE);
+const CARDS = [9.2, 12.5, 19.4, 22.5, 26.3, 30.2].map(t => t + PHONE);
+const SWIPES = [3.3, 5.6, 8.1, 11.3, 14.3, 15.4, 16.5, 18.1, 21.1, 23.9, 25.1, 28.4].map(t => t + PHONE);
+const WHOOSH = [4.9, 9.6, 43.5, 46.5];
+const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+function impulse(ctx, secs, decay) {
+  const len = SR * secs, b = ctx.createBuffer(2, len, SR);
+  let s = 7;
+  for (let c = 0; c < 2; c++) { const d = b.getChannelData(c); for (let i = 0; i < len; i++) { s = (s * 16807) % 2147483647; d[i] = ((s / 2147483647) * 2 - 1) * Math.pow(1 - i / len, decay); } }
+  return b;
+}
+function noiseBuf(ctx) { const b = ctx.createBuffer(1, SR * 3, SR); const d = b.getChannelData(0); let s = 99; for (let i = 0; i < d.length; i++) { s = (s * 16807) % 2147483647; d[i] = (s / 2147483647) * 2 - 1; } return b; }
+
+function chain(ctx, out, wet) {
+  const dry = ctx.createGain(); dry.connect(out);
+  const conv = ctx.createConvolver(); conv.buffer = impulse(ctx, 3.2, 2.6);
+  const w = ctx.createGain(); w.gain.value = wet; dry.connect(conv); conv.connect(w); w.connect(out);
+  return dry;
+}
+
+async function music() {
+  const ctx = new OfflineAudioContext(2, SR * DUR, SR);
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 2.5; comp.connect(ctx.destination);
+  const bus = chain(ctx, comp, 0.32);
+  const nb = noiseBuf(ctx);
+  const tone = (t, f, d, type, g, cut, att = 0.01, pan = 0, out = bus) => {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.value = f;
+    const fl = ctx.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = cut;
+    const gg = ctx.createGain(); gg.gain.setValueAtTime(0.0001, t); gg.gain.exponentialRampToValueAtTime(g, t + att); gg.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    const p = ctx.createStereoPanner(); p.pan.value = pan; o.connect(fl); fl.connect(gg); gg.connect(p); p.connect(out); o.start(t); o.stop(t + d + 0.05);
+  };
+  const noise = (t, d, type, f, q, g, att = 0.002, pan = 0) => {
+    const n = ctx.createBufferSource(); n.buffer = nb; const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    const gg = ctx.createGain(); gg.gain.setValueAtTime(0.0001, t); gg.gain.exponentialRampToValueAtTime(g, t + att); gg.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    const p = ctx.createStereoPanner(); p.pan.value = pan; n.connect(fl); fl.connect(gg); gg.connect(p); p.connect(bus); n.start(t); n.stop(t + d + 0.05); return fl;
+  };
+  const piano = (t, m, g = 0.07, pan = 0) => { tone(t, hz(m), 2.2, 'sine', g, 3000, 0.004, pan); tone(t, hz(m) * 2.0, 0.9, 'triangle', g * 0.25, 4000, 0.003, pan); tone(t, hz(m) * 1.003, 1.8, 'sine', g * 0.5, 2000, 0.004, -pan); };
+  const prog = [[57, 60, 64, 67], [53, 57, 60, 64], [48, 55, 60, 64], [55, 59, 62, 66]]; // Am7 Fmaj7 Cadd G(add#11)
+  const roots = [45, 41, 48, 43];
+  const bar = 4 * B;
+  // pads, one chord per two bars
+  for (let i = 0, t = 0; t < DUR - 1; i++, t += 2 * bar) {
+    const c = prog[i % 4]; const g = t < 5 ? 0.025 : t > 43.5 && t < 46.6 ? 0.03 : 0.04;
+    c.forEach((m, k) => { tone(t, hz(m - 12), 2 * bar + 0.8, 'sawtooth', g * 0.5, 900, 1.2, (k - 1.5) * 0.4); tone(t, hz(m), 2 * bar + 0.8, 'triangle', g, 1800, 1.4, (1.5 - k) * 0.4); });
+  }
+  // drone and shimmer in the opener
+  tone(0, hz(33), 10, 'sine', 0.12, 300, 2.5);
+  noise(0, 9.8, 'bandpass', 3200, 6, 0.012, 4, 0.3);
+  // felt piano motif from 5 s
+  const motif = [0, 2, 3, 1, 2, 3, 0, 1];
+  for (let t = 5.0; t < DUR - 4; t += B / 2) {
+    const k = Math.round((t - 5) / (B / 2));
+    if (t > 43.4 && t < 46.5 && k % 2) continue;
+    const c = prog[Math.floor(t / (2 * bar)) % 4]; const m = c[motif[k % 8]] + 12;
+    piano(t, m, t < 9.8 ? 0.05 : 0.06, (k % 2 ? 0.25 : -0.25));
+  }
+  // groove from the phone reveal to the breakdown
+  for (let t = PHONE + 0.2; t < 43.4; t += B) {
+    const b = Math.round((t - PHONE - 0.2) / B);
+    const o = ctx.createOscillator(); o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    const gg = ctx.createGain(); const kg = b % 2 === 0 ? 0.55 : 0.32; gg.gain.setValueAtTime(0.0001, t); gg.gain.exponentialRampToValueAtTime(kg, t + 0.005); gg.gain.exponentialRampToValueAtTime(0.0001, t + 0.38);
+    o.connect(gg); gg.connect(comp); o.start(t); o.stop(t + 0.4);
+    if (b % 2 === 1) noise(t, 0.22, 'bandpass', 1900, 1.4, 0.07);
+    noise(t + B / 2, 0.06, 'highpass', 8000, 0.8, 0.03, 0.002, 0.2);
+    if (t > 37.5) { noise(t + B / 4, 0.04, 'highpass', 9000, 0.8, 0.02, 0.002, -0.3); noise(t + 3 * B / 4, 0.04, 'highpass', 9000, 0.8, 0.02, 0.002, 0.3); }
+    const root = roots[Math.floor(t / (2 * bar)) % 4];
+    tone(t, hz(root - 12), B * 0.9, 'sawtooth', 0.09, 380, 0.01);
+    tone(t + B / 2, hz(root), B * 0.4, 'sawtooth', 0.05, 500, 0.01);
+  }
+  // lift into the map
+  for (let t = 37.9; t < 43.4; t += B / 4) { const c = prog[Math.floor(t / (2 * bar)) % 4]; tone(t, hz(c[Math.round(t / (B / 4)) % 4] + 24), 0.25, 'square', 0.012, 3500, 0.002, Math.sin(t * 3) * 0.5); }
+  // final swell and ring
+  prog[0].forEach((m, k) => { tone(46.6, hz(m), 5.2, 'triangle', 0.05, 2600, 0.6, (k - 1.5) * 0.5); tone(46.6, hz(m + 12), 5, 'sine', 0.03, 4000, 0.8, (1.5 - k) * 0.5); });
+  tone(46.6, hz(33), 5, 'sine', 0.12, 260, 0.4);
+  const buf = await ctx.startRendering();
+  return encode(buf, 0.85);
+}
+
+async function sfx() {
+  const ctx = new OfflineAudioContext(2, SR * DUR, SR);
+  const bus = chain(ctx, ctx.destination, 0.22);
+  const nb = noiseBuf(ctx);
+  const n = (t, d, type, f0, f1, q, g, att, pan = 0, out = bus) => {
+    const s = ctx.createBufferSource(); s.buffer = nb; const fl = ctx.createBiquadFilter(); fl.type = type; fl.Q.value = q;
+    fl.frequency.setValueAtTime(f0, t); fl.frequency.exponentialRampToValueAtTime(f1, t + d);
+    const gg = ctx.createGain(); gg.gain.setValueAtTime(0.0001, t); gg.gain.exponentialRampToValueAtTime(g, t + att); gg.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    const p = ctx.createStereoPanner(); p.pan.value = pan; s.connect(fl); fl.connect(gg); gg.connect(p); p.connect(out); s.start(t); s.stop(t + d + 0.05);
+  };
+  const tone = (t, f0, f1, d, g, type = 'sine', pan = 0) => {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + d);
+    const gg = ctx.createGain(); gg.gain.setValueAtTime(0.0001, t); gg.gain.exponentialRampToValueAtTime(g, t + 0.004); gg.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    const p = ctx.createStereoPanner(); p.pan.value = pan; o.connect(gg); gg.connect(p); p.connect(bus); o.start(t); o.stop(t + d + 0.05);
+  };
+  // big whooshes at scene changes
+  WHOOSH.forEach(t => { n(t - 0.35, 0.9, 'bandpass', 300, 4200, 1.2, 0.5, 0.55, -0.3); n(t - 0.2, 0.8, 'bandpass', 500, 2400, 2, 0.25, 0.45, 0.3); });
+  // riser + impact as the phone appears
+  n(7.8, 2.0, 'bandpass', 400, 6000, 3, 0.14, 1.9);
+  tone(9.8, 70, 32, 1.4, 0.9); n(9.8, 1.2, 'lowpass', 5000, 300, 0.7, 0.3, 0.003);
+  // UI taps
+  TAPS.forEach(t => { tone(t, 1900, 1500, 0.06, 0.16, 'sine', 0.2); n(t, 0.03, 'highpass', 4500, 6000, 0.8, 0.12, 0.001, 0.2); tone(t + 0.01, 180, 120, 0.08, 0.2, 'sine'); });
+  // screen swipes and sheets
+  SWIPES.forEach(t => n(t, 0.45, 'bandpass', 900, 3200, 1.6, 0.11, 0.18, 0.15));
+  // cards lifting off the glass
+  CARDS.forEach(t => { tone(t, 880, 1320, 0.25, 0.06, 'triangle', -0.2); tone(t + 0.07, 1320, 1760, 0.3, 0.04, 'triangle', 0.2); n(t, 0.35, 'bandpass', 2000, 5000, 2, 0.05, 0.12); });
+  // route drawing shimmer and arrival on the map
+  for (let i = 0; i < 18; i++) { const t = 39.4 + i * 0.1; tone(t, 1760 + i * 60, 1900 + i * 60, 0.35, 0.02, 'sine', Math.sin(i) * 0.6); }
+  // final hit under the logo
+  tone(46.6, 60, 30, 2.4, 0.9); n(46.6, 2.5, 'lowpass', 8000, 400, 0.7, 0.28, 0.004); n(46.6, 3.5, 'highpass', 6000, 8000, 0.5, 0.06, 0.01);
+  const buf = await ctx.startRendering();
+  return encode(buf, 0.9);
+}
+
+function encode(buf, peakTarget) {
+  const L = buf.getChannelData(0), R = buf.getChannelData(1); let peak = 0;
+  for (let i = 0; i < L.length; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
+  const k = peakTarget / (peak || 1), n = L.length, ab = new ArrayBuffer(44 + n * 4), v = new DataView(ab);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 4, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true);
+  v.setUint32(24, SR, true); v.setUint32(28, SR * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 4, true);
+  for (let i = 0; i < n; i++) { v.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i] * k)) * 32767, true); v.setInt16(46 + i * 4, Math.max(-1, Math.min(1, R[i] * k)) * 32767, true); }
+  const bytes = new Uint8Array(ab); let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+window.renderStems = async () => ({music: await music(), sfx: await sfx()});
+</script></body></html>
